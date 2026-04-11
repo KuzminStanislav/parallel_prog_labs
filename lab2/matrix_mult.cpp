@@ -3,6 +3,7 @@
 #include <fstream>
 #include <chrono>
 #include <string>
+#include <omp.h>
 
 using namespace std;
 
@@ -24,7 +25,7 @@ void write_matrix(const string& filename, const vector<double>& matrix, int n){
 }
 
 int main(int argc, char* argv[]){
-    if (argc != 5){
+    if (argc != 6){
         cerr << "Incorrect args!" << endl;
         return 1;
     }
@@ -34,14 +35,16 @@ int main(int argc, char* argv[]){
     string file_b = argv[3];
     string file_c = argv[4];
 
-    vector<double> A(n * n);
-    vector<double> B(n * n);
-    vector<double> C(n * n, 0.0);
+    vector<double> A((size_t)n * n);
+    vector<double> B((size_t)n * n);
+    vector<double> C((size_t)n * n, 0.0);
 
     read_matrix(file_a, A, n);
     read_matrix(file_b, B, n);
 
     auto start = chrono::high_resolution_clock::now();
+
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; ++i){
         for(int k = 0; k < n; ++k){
             double temp = A[i * n + k];
