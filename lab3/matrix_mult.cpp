@@ -3,57 +3,92 @@
 #include <fstream>
 #include <chrono>
 #include <string>
+#include <mpi.h>
 
 using namespace std;
 
-void read_matrix(const string& filename, vector<double>& matrix, int n){
+void read_matrix(const string& filename, vector<double>& matrix, int n) {
     ifstream file(filename, ios::binary);
-    if (file){
-        file.read(reinterpret_cast<char*>(matrix.data()), n * n * sizeof(double));
+    if (file) {
+        file.read(reinterpret_cast<char*>(matrix.data()), (size_t)n * n * sizeof(double));
     } else {
-        cerr << "Error while openning file: " << filename << endl;
-        exit(1);
+        cerr << "Error while opening file: " << filename << endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
     }
 }
 
-void write_matrix(const string& filename, const vector<double>& matrix, int n){
+void write_matrix(const string& filename, const vector<double>& matrix, int n) {
     ofstream file(filename, ios::binary);
-    if (file){
-        file.write(reinterpret_cast<const char*>(matrix.data()), n * n * sizeof(double));
+    if (file) {
+        file.write(reinterpret_cast<const char*>(matrix.data()), (size_t)n * n * sizeof(double));
     }
 }
 
-int main(int argc, char* argv[]){
-    if (argc != 5){
-        cerr << "Incorrect args!" << endl;
+void multiply_matrices_parallel(const vector<double>& A_local, const vector<double>& B, vector<double>& C_local, int rows_per_proc, int n) {
+    for (int i = 0; i < rows_per_proc; ++i) {
+        for (int k = 0; k < n; ++k) {
+            double temp = A_local[i * n + k];
+            for (int j = 0; j < n; ++j) {
+                C_local[i * n + j] += temp * B[k * n + j];
+            }
+        }
+    }
+}
+
+int main(int argc, char* argv[]) {
+    MPI_Init(&argc, &argv);
+
+    int world_size, rank;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    if (argc != 5) {
+        if (rank == 0) cerr << "Usage: mpiexec -n <p> ./exe <n> <A.bin> <B.bin> <C.bin>" << endl;
+        MPI_Finalize();
         return 1;
     }
 
     int n = stoi(argv[1]);
-    string file_a = argv[2];
-    string file_b = argv[3];
-    string file_c = argv[4];
+    int rows_per_proc = n / world_size;
 
-    vector<double> A(n * n);
     vector<double> B(n * n);
-    vector<double> C(n * n, 0.0);
+    vector<double> A_local(rows_per_proc * n);
+    vector<double> C_local(rows_per_proc * n, 0.0);
 
-    read_matrix(file_a, A, n);
-    read_matrix(file_b, B, n);
+    if (rank == 0) {
+        vector<double> A_full(n * n);
+        read_matrix(argv[2], A_full, n);
+        read_matrix(argv[3], B, n);
 
-    auto start = chrono::high_resolution_clock::now();
-    for (int i = 0; i < n; ++i){
-        for(int k = 0; k < n; ++k){
-            double temp = A[i * n + k];
-            for(int j = 0; j < n; ++j){
-                C[i * n + j] += temp * B[k * n + j];
-            }
-        }
+        MPI_Scatter(A_full.data(), rows_per_proc * n, MPI_DOUBLE, 
+                    A_local.data(), rows_per_proc * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    } else {
+        MPI_Scatter(NULL, 0, MPI_DOUBLE, 
+                    A_local.data(), rows_per_proc * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
-    auto end = chrono::high_resolution_clock::now();
-    chrono::duration<double> elapsed = end - start;
 
-    write_matrix(file_c, C, n);
-    cout << elapsed.count() << endl;
+    MPI_Bcast(B.data(), n * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    MPI_Barrier(MPI_COMM_WORLD); 
+    auto start = chrono::high_resolution_clock::now();
+
+    multiply_matrices_parallel(A_local, B, C_local, rows_per_proc, n);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    auto end = chrono::high_resolution_clock::now();
+    double elapsed = chrono::duration<double>(end - start).count();
+
+    vector<double> C_full;
+    if (rank == 0) C_full.resize(n * n);
+
+    MPI_Gather(C_local.data(), rows_per_proc * n, MPI_DOUBLE, 
+               C_full.data(), rows_per_proc * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        write_matrix(argv[4], C_full, n);
+        cout << elapsed << endl; 
+    }
+
+    MPI_Finalize();
     return 0;
 }

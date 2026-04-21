@@ -4,67 +4,70 @@ import os
 import matplotlib.pyplot as plt
 import pandas as pd
 
-
 sizes = [200, 400, 800, 1200, 1600, 2000]
+cores_list = [1, 2, 4, 8]
 results = []
 
-print("C++ compilation")
-subprocess.run(["g++", "-O3", "matrix_mult.cpp", "-o", "matrix_mult.exe"], check=True, shell=True)
+print("Compiling MPI C++ program...")
+subprocess.run(["mpicxx", "-O3", "matrix_mult.cpp", "-o", "matrix_mult.exe"], check=True, shell=True)
 
 for n in sizes:
-    print(f"\n--- run for N = {n} ---")
-
+    print(f"\nMatrix Size N = {n}")
     A = np.random.rand(n, n).astype(np.float64)
     B = np.random.rand(n, n).astype(np.float64)
-
     A.tofile("A.bin")
     B.tofile("B.bin")
 
-    process = subprocess.run(
-        ["matrix_mult.exe", str(n), "A.bin", "B.bin", "C_out.bin"],
-        capture_output=True, text=True, shell=True
-    )
+    for p in cores_list:
+        if n % p != 0:
+            continue
 
-    cpp_time = float(process.stdout.strip())
-    print(f"Duration (C++): {cpp_time:.4f} seconds")
+        process = subprocess.run(
+            ["mpiexec", "-n", str(p), "matrix_mult.exe", str(n), "A.bin", "B.bin", "C_out.bin"],
+            capture_output=True, text=True, shell=True
+        )
 
-    C_cpp = np.fromfile("C_out.bin", dtype=np.float64).reshape((n, n))
+        if process.returncode == 0:
+            cpp_time = float(process.stdout.strip())
+            
+            if p == 1:
+                C_cpp = np.fromfile("C_out.bin", dtype=np.float64).reshape((n, n))
+                is_correct = np.allclose(C_cpp, np.dot(A, B), atol=1e-8)
+                print(f"  Verification: {'OK' if is_correct else 'FAIL'}")
 
-    C_py = np.dot(A, B)
-    is_correct = np.allclose(C_cpp, C_py, atol=1e-8)
-    print(f"Verification: {'DONE' if is_correct else 'Error'}")
-
-    complexity = 2 * (n ** 3)
-    gflops = (complexity / cpp_time) / 1e9 if cpp_time > 0 else 0
-
-    results.append({
-        "N": int(n),
-        "Time (sec)": round(cpp_time, 4),
-        "GFLOPS": round(gflops, 4),
-        "Operations": f"{complexity:.2e}",
-        "Efficiency": round(gflops / 10, 4)
-    })
-    
+            gflops = (2 * (n**3) / cpp_time) / 1e9
+            results.append({"N": n, "Cores": p, "Time": cpp_time, "GFLOPS": gflops})
+            print(f"  P={p}: {cpp_time:.4f}s | {gflops:.2f} GFLOPS")
 
 df = pd.DataFrame(results)
-df.to_csv("report_table.csv", index=False)
+df.to_csv("mpi_performance_report.csv", index=False)
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-ax1.plot(df["N"], df["Time (sec)"], marker='o', color='b', linewidth=2)
-ax1.set_title("Execution Time")
-ax1.set_xlabel("Matrix Size (N)")
-ax1.set_ylabel("Seconds")
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+for p in cores_list:
+    subset = df[df["Cores"] == p]
+    ax1.plot(subset["N"], subset["Time"], marker='o', label=f'{p} Cores')
+ax1.set_title("Execution Time (Seconds)")
+ax1.set_xlabel("Matrix Size N")
+ax1.set_ylabel("Time (s)")
+ax1.legend()
 ax1.grid(True)
 
-ax2.plot(df["N"], df["GFLOPS"], marker='s', color='r', linewidth=2)
-ax2.set_title("Performance (GFLOPS)")
-ax2.set_xlabel("Matrix Size (N)")
-ax2.set_ylabel("GFLOPS")
+for n in sizes:
+    subset = df[df["N"] == n]
+    if not subset.empty:
+        t1 = subset[subset["Cores"] == 1]["Time"].values[0]
+        ax2.plot(subset["Cores"], t1 / subset["Time"], marker='s', label=f'N={n}')
+ax2.plot(cores_list, cores_list, 'k--', alpha=0.5, label="Ideal")
+ax2.set_title("Speedup Analysis (T1 / Tp)")
+ax2.set_xlabel("Number of Cores")
+ax2.set_ylabel("Speedup")
+ax2.legend()
 ax2.grid(True)
 
 plt.tight_layout()
-plt.savefig("performance_analysis.png")
+plt.savefig("mpi_results.png")
+print("\nSuccess! Files 'mpi_performance_report.csv' and 'mpi_results.png' generated.")
 
-for file in ["A.bin", "B.bin", "C_out.bin"]:
-    if os.path.exists(file):
-        os.remove(file)
+for f in ["A.bin", "B.bin", "C_out.bin"]:
+    if os.path.exists(f): os.remove(f)
