@@ -85,8 +85,7 @@ int main(int argc, char* argv[]) {
                C_full.data(), rows_per_proc * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
-        write_matrix(argv[4], C_full, n);
-        cout << elapsed << endl; 
+        cout << chrono::duration<double>(end - start).count(); // Без лишнего текста
     }
 
     MPI_Finalize();
